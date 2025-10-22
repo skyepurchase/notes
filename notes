@@ -1,7 +1,9 @@
-#!/usr/bin/env bash
+#!/usr/bin/sh
+
+# Modified from https://github.com/pimterry/notes/blob/master/notes
 
 # Version
-notes_version="1.4.0"
+notes_version="1.4.1.alpha"
 
 # Default Date string before config
 QUICKNOTE_FORMAT="quicknote-%Y-%m-%d"
@@ -44,6 +46,22 @@ ls_notes() {
     fi
 
     if [[ $ls_result == 0 && "$formatted_output" ]]; then
+        printf "$formatted_output\n"
+        return 0
+    else
+        return 2
+    fi
+}
+
+tree_notes() {
+    local tree_output=$(tree -C "$notes_dir/$*" 2>&1 | grep -v "~$")
+    local tree_result=$?
+    local formatted_output=$tree_output
+
+    local path_prefix=$(printf "$notes_dir" | sed -e 's/[]\/$*.^|[]/\\&/g')
+    formatted_output=$(printf "$tree_output" | sed -E "s/$path_prefix//")
+
+    if [[ $tree_result == 0 && "$formatted_output" ]]; then
         printf "$formatted_output\n"
         return 0
     else
@@ -117,7 +135,7 @@ generate_name() {
     printf $resolved_name
 }
 
-new_note() {
+create_note() {
     local template_path="" # Either empty (no template) or the path to the template we'll use
     if [[ "$1" == "-t" ]]; then
         shift
@@ -159,12 +177,25 @@ new_note() {
 
     mkdir -p "$(dirname "$notes_dir/$note_name")"
 
+    local note_path=$(get_full_note_path "$note_name")
     if [[ "$template_path" != "" ]]; then
-        local note_path=$(get_full_note_path "$note_name")
         cp "$template_path" "$note_path"
+    else
+        # Titling
+        # Remove subdirectories to get the file name
+        filename="${note_name##*/}"
+        # Remove filename connectors
+        sanitised_filename="${filename//-/ }"
+        # Capitalise words
+        title="$(echo $sanitised_filename | sed -r 's/\<./\U&/g')"
+        echo "# $title" >> "$note_path"
     fi
 
-    open_note "$note_name"
+    printf "$note_name"
+}
+
+new_note(){
+    open_note "$(create_note $@)"
 }
 
 remove_note() {
@@ -225,6 +256,29 @@ get_full_note_path() {
     echo "$note_path"
 }
 
+# TODO: Wasteful to have two very similar functions but can tidy up later
+get_full_note_or_dir_path() {
+    local input_path=$1
+
+    # first check if file exists
+    if [ -e "$input_path" ]; then # note path given is good absolute or relative path
+        input_path="$input_path"
+    elif [ -e "$notes_dir/$input_path" ]; then # exists in notes_dir
+        input_path="$notes_dir/$input_path"
+    elif [ -f "$notes_dir/$input_path.$NOTES_EXT" ]; then # note with this name and default extension exists
+        input_path="$notes_dir/$input_path.$NOTES_EXT"
+    elif echo "$input_path" | grep '[.][A-Za-z]\{1,4\}$' &>/dev/null; then # given name has a 1-4 letter extension
+        input_path="$notes_dir/$input_path"
+    else
+        if [[ "$input_path" != *.$NOTES_EXT ]]; then
+            input_path="$input_path.$NOTES_EXT"
+        fi
+        input_path="$notes_dir/$input_path"
+    fi
+
+    echo "$input_path"
+}
+
 open_note() {
     local note_path=$1
 
@@ -277,11 +331,11 @@ append_note() {
 }
 
 move_note() {
-    local source_note_path=$( get_full_note_path "$1" )
+    local source_note_path=$( get_full_note_or_dir_path "$1" )
     local dest_or_dir_path=$2
 
     if [[ ! -e "$source_note_path" ]]; then
-        printf "mv requires a source note that exists\n"
+        printf "mv requires a source note or folder that exists\n"
         exit 1
     fi
 
@@ -294,11 +348,17 @@ move_note() {
     if [[ -d "$dir_path" ]]; then
         mv $source_note_path $dir_path
         return
+    elif [[ "$dir_path" == */ ]]; then
+        # Case where it is a new directory
+        mkdir -p $dir_path
+        mv $source_note_path $dir_path
+        return
     fi
 
-    local dest_path=$( get_full_note_path "$dest_or_dir_path" )
-    mkdir -p "$( dirname $dest_path)"
-    mv $source_note_path $dest_path
+
+    local dir_path=$( get_full_note_path "$dest_or_dir_path" )
+    mkdir -p "$( dirname $dir_path)"
+    mv $source_note_path $dir_path
 }
 
 cat_note() {
@@ -311,7 +371,7 @@ cat_note() {
 
     note_path=$( get_full_note_path "$note_path" )
 
-    cat "$note_path"
+    glow "$note_path"
 }
 
 realpath() {
@@ -334,7 +394,9 @@ $name is a command line note taking tool.
 
 Usage:
     $name new|n [-t <template>] <name>    # Create a new note, if -t is given, use template
+    $name create|c [-t <template>] <name> # Create a new note without opening, if -t is given, use template
     $name ls <pattern>                    # List notes by path
+    $name tree|t <pattern>                # print the notes tree by path
     $name find|f [pattern]                # Search notes by filename and path
     $name grep|g <pattern>                # Search notes by content
     $name search|s [pattern]              # Search notes by filename or content
@@ -380,8 +442,15 @@ main() {
             cmd="new_note"
             modified=1
             ;;
+        "create"|"c" )
+            cmd="create_note"
+            modified=1
+            ;;
         "ls" )
             cmd="ls_notes"
+            ;;
+        "tree" | "t" )
+            cmd="tree_notes"
             ;;
         "search"|"s" )
             cmd="search_filenames_and_contents"
